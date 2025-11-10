@@ -1,56 +1,72 @@
 import os
-import google.generativeai as genai
 from flask import Flask, request, jsonify
+from openai import OpenAI
+import json
 
-app = Flask(__name__) # <-- ¡Esta es la línea que faltaba!
+app = Flask(__name__)
 
-# Configura la clave de API desde las Variables de Entorno
+# --- Configuración de OpenAI ---
+client = None
 try:
-    GEMINI_API_KEY = os.environ.get('GEMINI_API_KEY')
-    if not GEMINI_API_KEY:
-        raise ValueError("No se encontró la GEMINI_API_KEY.")
-
-    genai.configure(api_key=GEMINI_API_KEY)
-    model = genai.GenerativeModel('gemini-1.5-flash')
+    # Intenta obtener la clave de la variable de entorno
+    OPENAI_API_KEY = os.environ.get('OPENAI_API_KEY')
+    if not OPENAI_API_KEY:
+        # Esto lanzará un error para que la ruta /check sepa que debe fallar.
+        raise ValueError("No se encontró la OPENAI_API_KEY en el entorno.")
+    
+    # Inicializa el cliente de OpenAI
+    client = OpenAI(api_key=OPENAI_API_KEY)
 except Exception as e:
-    print(f"Error grave al configurar Gemini: {e}")
-    model = None
+    print(f"Error grave al configurar OpenAI: {e}")
+    client = None
 
-# La instrucción (Prompt) para la IA
+# EL PROMPT: La instrucción para la IA
 SYSTEM_PROMPT = """
-Eres "Fraudecero", un asistente de ciberseguridad para proteger a adultos mayores.
-Tu misión es analizar un texto y decidir si es un fraude, estafa o phishing.
-Sé muy cuidadoso. Si es sospechoso, es mejor prevenir.
+Eres "Fraudecero", un asistente de ciberseguridad diseñado para proteger a adultos mayores.
+Tu misión es analizar el siguiente texto y determinar si es un fraude, una estafa o phishing.
+Sé muy cuidadoso. Si algo es remotamente sospechoso, es mejor prevenir.
 
-Responde ÚNICAMENTE con una de estas tres palabras:
-- "rojo": Si es claramente un fraude, phishing o estafa.
-- "amarillo": Si es sospechoso, spam o publicidad engañosa.
-- "verde": Si estás 99% seguro de que es inofensivo.
-
-Analiza este texto:
+Responde ÚNICAMENTE con una de estas tres palabras: "rojo", "amarillo", o "verde".
 """
 
 @app.route('/check', methods=['POST'])
 def check_text():
-    if not model:
-        return jsonify({"status": "gris", "message": "Error del servidor: El modelo de IA no está disponible."}), 500
-
+    # 1. Comprueba si el cliente de OpenAI se inicializó correctamente
+    if not client:
+        return jsonify({"status": "gris", "message": "Error del servidor: La clave de OpenAI no está configurada."}), 500
+    
+    # 2. Obtiene el texto del cuerpo JSON de la solicitud
     try:
         data = request.json
-        text_to_check = data.get('text')
+        if not data or 'text' not in data:
+            return jsonify({"status": "gris", "message": "Error: Se espera un JSON con la clave 'text'."}), 400
+        
+        text_to_check = data.get('text', '')
+        if not text_to_check:
+             return jsonify({"status": "gris", "message": "Error: El campo 'text' no puede estar vacío."}), 400
 
-        if not text_to_check or len(text_to_check.strip()) == 0:
-            return jsonify({"status": "gris", "message": "No se envió texto."}), 400
+    except Exception as e:
+        return jsonify({"status": "gris", "message": f"Error al analizar el JSON: {e}"}), 400
+    
+    # 3. Llama a la IA de OpenAI
+    try:
+        response = client.chat.completions.create(
+            model="gpt-3.5-turbo", # Modelo estable y rápido
+            messages=[
+                {"role": "system", "content": SYSTEM_PROMPT},
+                {"role": "user", "content": text_to_check}
+            ],
+            max_tokens=5, # Solo necesitamos 'rojo', 'amarillo', o 'verde'
+            temperature=0.0 # Pide una respuesta determinista
+        )
+        
+        # Extrae y limpia el resultado
+        ia_result = response.choices[0].message.content.strip().lower()
 
-        # 1. Llamar a la IA
-        full_prompt = SYSTEM_PROMPT + text_to_check
-        response = model.generate_content(full_prompt)
-        ia_result = response.text.strip().lower()
-
-        # 2. Generar el mensaje simple para el usuario
+        # 4. Generar la respuesta final (El código del semáforo)
         status = "gris"
         message = "No pude analizar esto."
-
+        
         if "rojo" in ia_result:
             status = "rojo"
             message = "¡PELIGRO! Esto parece una estafa. No hagas clic y no respondas."
@@ -61,22 +77,16 @@ def check_text():
             status = "verde"
             message = "Parece seguro. Es un mensaje normal."
 
-        # 3. Enviar la respuesta a la app Android
-        return jsonify({
-            "status": status,
-            "message": message
-        })
+        return jsonify({"status": status, "message": message})
 
     except Exception as e:
-        print(f"Error inesperado en /check: {e}")
+        print(f"Error en /check al llamar a la IA: {e}")
+        # Si la clave es inválida, este error es lo que el servidor devuelve.
+        if "api_key not valid" in str(e).lower() or "authentication" in str(e).lower():
+             return jsonify({"status": "gris", "message": "Error del servidor: La clave de OpenAI es inválida."}), 500
         return jsonify({"status": "gris", "message": "Error interno del analizador."}), 500
 
-# Ruta para que Render sepa que la app está viva
-@app.route('/')
-def health_check():
-    return "Fraudecero Backend está vivo!", 200
-
-# Iniciar la app
 if __name__ == '__main__':
-    port = int(os.environ.get('PORT', 8080))
+    # Usamos Gunicorn en Render, pero esto es útil para probar localmente
+    port = int(os.environ.get('PORT', 5000))
     app.run(host='0.0.0.0', port=port)
