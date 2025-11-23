@@ -2,6 +2,14 @@ import os
 from flask import Flask, request, jsonify
 from openai import OpenAI
 from dotenv import load_dotenv
+from flask_cors import CORS  # <--- NUEVO
+
+load_dotenv()
+
+app = Flask(__name__)
+CORS(app)  
+
+
 
 # Cargar variables si estamos en local (en Render esto no hace daño)
 load_dotenv()
