@@ -2,88 +2,81 @@ import os
 from flask import Flask, request, jsonify
 from openai import OpenAI
 from dotenv import load_dotenv
-from flask_cors import CORS  # <--- NUEVO
+from flask_cors import CORS
 
 load_dotenv()
 
 app = Flask(__name__)
-CORS(app)  
+CORS(app)
 
-
-
-# Cargar variables si estamos en local (en Render esto no hace daño)
-load_dotenv()
-
-app = Flask(__name__)
-
-# --- Configuración de OpenAI ---
 client = None
 try:
-    # Intenta obtener la clave
     api_key = os.environ.get('OPENAI_API_KEY')
-    
-    # Si no hay clave, imprimimos advertencia pero no rompemos la app todavía
-    if not api_key:
-        print("⚠️ ADVERTENCIA: No se encontró OPENAI_API_KEY.")
-    else:
+    if api_key:
         client = OpenAI(api_key=api_key)
-        print("✅ Cliente OpenAI configurado exitosamente.")
-
+        print("✅ OpenAI listo.")
+    else:
+        print("⚠️ Falta API Key.")
 except Exception as e:
-    print(f"❌ Error al configurar OpenAI: {e}")
+    print(f"❌ Error config: {e}")
 
-# EL PROMPT: La instrucción maestra
+# PROMPT MEJORADO (Detecta contexto de dinero y ve imágenes)
 SYSTEM_PROMPT = """
-Eres "Fraudecero", un experto en ciberseguridad.
-Analiza el mensaje y responde ÚNICAMENTE con un JSON que tenga este formato:
-{"riesgo": "ALTO", "razon": "Explicación breve"} 
-o 
-{"riesgo": "BAJO", "razon": "Explicación breve"}
+Eres "Fraudecero", analista de ciberseguridad.
+Analiza texto o imágenes para detectar estafas.
 
-Si es phishing, estafa, o pide dinero/datos urgentes, el riesgo es ALTO.
+Responde SOLO JSON:
+{"riesgo": "ALTO", "razon": "Breve explicación"} 
+o 
+{"riesgo": "BAJO", "razon": "Breve explicación"}
+
+REGLAS:
+1. "DINERO/PLATA" EN CHARLA CASUAL (amigos, familia, montos bajos) = RIESGO BAJO 🟢.
+2. RIESGO ALTO 🔴: Urgencia, links raros, desconocidos pidiendo plata, premios falsos, logos pixelados.
 """
 
 @app.route('/', methods=['GET'])
 def home():
-    return "🤖 Fraudecero API está activa y funcionando."
+    return "🤖 Fraudecero v2.0 Activo"
 
 @app.route('/check', methods=['POST'])
-def check_text():
-    # 1. Verificar si tenemos el cerebro conectado
+def check_fraud():
     if not client:
-        return jsonify({"status": "error", "message": "El servidor no tiene configurada la API Key de OpenAI."}), 500
+        return jsonify({"status": "error", "message": "Sin API Key"}), 500
     
-    # 2. Obtener el texto del celular
     data = request.json
-    if not data or 'text' not in data:
-        return jsonify({"status": "error", "message": "Falta el campo 'text' en el JSON"}), 400
-    
-    mensaje_usuario = data['text']
-    print(f"📩 Analizando: {mensaje_usuario}")
+    if not data:
+        return jsonify({"status": "error", "message": "Sin datos"}), 400
+
+    texto = data.get('text', '')
+    imagen = data.get('image', None)
+
+    print(f"📩 Recibido. Texto: {texto} | Imagen: {'SÍ' if imagen else 'NO'}")
+
+    user_content = []
+    if texto: user_content.append({"type": "text", "text": texto})
+    if imagen: user_content.append({"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{imagen}"}})
+
+    if not user_content:
+        return jsonify({"status": "error", "message": "Envía algo"}), 400
 
     try:
-        # 3. Consultar a la IA
         response = client.chat.completions.create(
-            model="gpt-3.5-turbo",
+            model="gpt-4o",
             messages=[
                 {"role": "system", "content": SYSTEM_PROMPT},
-                {"role": "user", "content": mensaje_usuario}
+                {"role": "user", "content": user_content}
             ],
             temperature=0.0
         )
         
-        # 4. Leer respuesta de la IA
-        resultado_ia = response.choices[0].message.content
-        print(f"🤖 Dice: {resultado_ia}")
-
-        # Devolver tal cual lo que dijo la IA
-        return jsonify({"status": "success", "analysis": resultado_ia})
+        resultado = response.choices[0].message.content.replace("```json", "").replace("```", "").strip()
+        return jsonify({"status": "success", "analysis": resultado})
 
     except Exception as e:
-        print(f"❌ Error al conectar con OpenAI: {e}")
+        print(f"❌ Error: {e}")
         return jsonify({"status": "error", "message": str(e)}), 500
 
 if __name__ == '__main__':
-    # Esto permite correrlo en tu PC
     port = int(os.environ.get('PORT', 5000))
     app.run(host='0.0.0.0', port=port)
